@@ -1,91 +1,61 @@
-const sharp = require('sharp')
 const fs = require('fs-extra')
 const path = require('path')
+const { execSync } = require('child_process')
 const ppconfig = require('./ppconfig.json')
 
-// icon size
-const DENSITIES = {
-    mdpi: 48,
-    hdpi: 72,
-    xhdpi: 96,
-    xxhdpi: 144,
-    xxxhdpi: 192,
-}
-
-// generate adaptive icons
-const generateAdaptiveIcons = async (input, outputDir) => {
-    for (const [dpi, size] of Object.entries(DENSITIES)) {
-        const mipmapDir = path.join(outputDir, `mipmap-${dpi}`)
-        await fs.ensureDir(mipmapDir)
-        const foregroundPath = path.join(
-            mipmapDir,
-            'ic_launcher_foreground.webp'
-        )
-        const backgroundPath = path.join(
-            mipmapDir,
-            'ic_launcher_background.webp'
-        )
-        const legacyPath = path.join(mipmapDir, 'ic_launcher.webp')
-        const legacyRoundPath = path.join(mipmapDir, 'ic_launcher_round.webp')
-
-        // 创建圆形遮罩
-        const roundedMask = Buffer.from(
-            `<svg><circle cx="${size / 2}" cy="${size / 2}" r="${
-                size / 2
-            }" fill="white"/></svg>`
-        )
-
-        // 生成普通图标
-        const img = sharp(input).resize(size, size)
-        await img.webp().toFile(foregroundPath)
-        await img.webp().toFile(legacyPath)
-
-        // 生成圆形图标
-        const roundedImg = img.composite([
-            {
-                input: roundedMask,
-                blend: 'dest-in',
-            },
-        ])
-        await roundedImg.webp().toFile(legacyRoundPath)
-
-        // 生成背景
-        await sharp({
-            create: {
-                width: size,
-                height: size,
-                channels: 4,
-                background: '#FFFFFF',
-            },
-        })
-            .webp()
-            .toFile(backgroundPath)
+function generateAdaptiveIcons(input, output) {
+    const densities = {
+        'mipmap-mdpi': 48,
+        'mipmap-hdpi': 72,
+        'mipmap-xhdpi': 96,
+        'mipmap-xxhdpi': 144,
+        'mipmap-xxxhdpi': 192,
     }
 
-    // Generate XML
-    const xmlPath = path.join(outputDir, 'mipmap-anydpi-v26')
-    await fs.ensureDir(xmlPath)
-    await fs.writeFile(
-        path.join(xmlPath, 'ic_launcher.xml'),
-        `
+    // icon背景颜色,可设置为none透明
+    const bgColor = '#FFFFFF'
+    // 一般0.75, 前景最大占比（安全区）
+    const foregroundScale = 0.68
+
+    if (!fs.existsSync(output)) {
+        fs.mkdirSync(output, { recursive: true })
+    }
+
+    for (const [folder, size] of Object.entries(densities)) {
+        const dir = path.join(output, folder)
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+
+        const backgroundFile = path.join(dir, 'ic_launcher_background.png')
+        const foregroundFile = path.join(dir, 'ic_launcher_foreground.png')
+
+        // linux只能convert， 背景：纯色填充（全覆盖）
+        execSync(
+            `convert -size ${size}x${size} canvas:"${bgColor}" ${backgroundFile}`
+        )
+
+        // 前景大小 = 图标尺寸 × 0.75
+        const fgSize = Math.round(size * foregroundScale)
+
+        // 前景：缩放到安全区域，居中，四周自动留边
+        execSync(
+            `convert "${input}" -resize ${fgSize}x${fgSize} ` +
+                `-gravity center -background none -extent ${size}x${size} ${foregroundFile}`
+        )
+    }
+
+    // 生成 Adaptive Icon XML (放到 mipmap-anydpi-v26)
+    const anydpiDir = path.join(output, 'mipmap-anydpi-v26')
+    if (!fs.existsSync(anydpiDir)) fs.mkdirSync(anydpiDir, { recursive: true })
+
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@mipmap/ic_launcher_background"/>
     <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
-</adaptive-icon>
-  `.trim()
-    )
+</adaptive-icon>`
 
-    await fs.writeFile(
-        path.join(xmlPath, 'ic_launcher_round.xml'),
-        `
-<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@mipmap/ic_launcher_background"/>
-    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
-</adaptive-icon>
-  `.trim()
-    )
+    fs.writeFileSync(path.join(anydpiDir, 'ic_launcher.xml'), xml, 'utf-8')
 
-    console.log('✅ Adaptive icons generated in WebP format.')
+    console.log('✅ Adaptive Icons 已生成:', output)
 }
 
 const updateAppName = async (androidResDir, appName) => {
@@ -296,7 +266,7 @@ const main = async () => {
     } = ppconfig.android
 
     const outPath = path.resolve(output)
-    await generateAdaptiveIcons(input, outPath)
+    generateAdaptiveIcons(input, outPath)
 
     const dest = path.resolve(copyTo)
     await fs.copy(outPath, dest, { overwrite: true })
